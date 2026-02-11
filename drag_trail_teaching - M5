@@ -1,0 +1,133 @@
+import time
+import os
+import threading
+from pymycobot.mycobot280 import MyCobot280
+
+# 配置参数
+PORT = "COM13"
+BAUD = 115200
+RECORD_FILE = "record_data.txt"  # 改为TXT文件
+
+
+class RobotController:
+    def __init__(self):
+        # 初始化机械臂
+        try:
+            self.mc = MyCobot280(PORT, BAUD, debug=False)
+            self.mc.power_on()
+            print("机械臂连接成功！")
+        except Exception as e:
+            print(f"连接失败: {e}")
+            exit()
+
+        # 状态变量
+        self.recording = False
+        self.playing = False
+        self.record_data = []  # 格式: [[角度1, 时间间隔1], [角度2, 时间间隔2], ...]
+        self.play_thread = None
+
+    def start_record(self):
+        if self.recording:
+            print("已在记录中")
+            return
+        self.recording = True
+        self.record_data = []
+        print("开始记录轨迹（拖动机械臂）...")
+
+        def _record():
+            last_time = time.time()
+            while self.recording:
+                angles = self.mc.get_encoders()
+                if angles:
+                    current_time = time.time()
+                    interval = current_time - last_time
+                    self.record_data.append([angles, interval])
+                    last_time = current_time
+                time.sleep(0.05)
+
+        threading.Thread(target=_record, daemon=True).start()
+
+    def stop_record(self):
+        if not self.recording:
+            print("未在记录中")
+            return
+        self.recording = False
+        print(f"停止记录，共采集 {len(self.record_data)} 个点")
+
+    def toggle_loop_play(self):
+        if self.playing:
+            self.playing = False
+            print("停止循环播放")
+        else:
+            if not self.record_data:
+                print("无记录数据，请先记录轨迹")
+                return
+            self.playing = True
+            print("开始循环播放...")
+
+            def _loop_play():
+                while self.playing:
+                    for angles, interval in self.record_data:
+                        if not self.playing:
+                            break
+                        self.mc.set_encoders(angles, 50)
+                        time.sleep(interval)
+
+            self.play_thread = threading.Thread(target=_loop_play, daemon=True)
+            self.play_thread.start()
+
+    def save_to_local(self):
+        """保存到TXT文件，格式：角度列表|时间间隔"""
+        if not self.record_data:
+            print("无数据可保存")
+            return
+        with open(RECORD_FILE, "w") as f:
+            for angles, interval in self.record_data:
+                # 格式示例：[10,20,30,40,50,60]|0.123
+                f.write(f"{angles}|{interval:.4f}\n")  # 保留4位小数
+        print(f"数据已保存到 {os.path.abspath(RECORD_FILE)}")
+
+    def release_robot(self):
+        try:
+            self.mc.release_all_servos()
+            print("机械臂已释放，可自由拖动")
+        except Exception as e:
+            print(f"释放失败: {e}")
+
+    def print_help(self):
+        print("""
+操作命令:
+r - 开始记录轨迹
+c - 停止记录轨迹
+P - 切换循环播放/停止
+s - 保存记录到本地(TXT)
+f - 释放机械臂
+q - 退出程序
+请输入命令并按回车:
+""")
+
+    def run(self):
+        self.print_help()
+        while True:
+            cmd = input().strip()
+            if cmd == 'q':
+                print("程序退出")
+                break
+            elif cmd == 'r':
+                self.start_record()
+            elif cmd == 'c':
+                self.stop_record()
+            elif cmd == 'P':
+                self.toggle_loop_play()
+            elif cmd == 's':
+                self.save_to_local()
+            elif cmd == 'f':
+                self.release_robot()
+            else:
+                print("未知命令，请重新输入")
+            print("\n请输入命令:")
+
+
+if __name__ == "__main__":
+    controller = RobotController()
+    controller.run()
